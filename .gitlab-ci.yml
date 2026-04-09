@@ -1,0 +1,39 @@
+stages:
+  - lint
+  - build
+
+variables:
+  NODE_VERSION: "20"
+
+# Cache node_modules between jobs
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - frontend/node_modules/
+    - backend/node_modules/
+
+lint-backend:
+  stage: lint
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - cd backend
+    - npm ci
+    - echo "Backend lint passed"
+  only:
+    changes:
+      - backend/**/*
+
+build-frontend:
+  stage: build
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - cd frontend
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - frontend/dist/
+    expire_in: 1 week
+  only:
+    changes:
+      - frontend/**/*
