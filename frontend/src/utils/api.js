@@ -1,140 +1,172 @@
-import { supabase } from './supabase';
+import { systems, articles, components, systemBom, articleBom } from './data.js';
 
-// Direkte Supabase-Anbindung für GitHub Pages (kein Backend nötig)
+// Statische Daten-Schicht — kein Supabase nötig
+// Daten direkt aus Excel-Artikelstamm generiert
+
+function filterAndSort(arr, filters = {}, orderBy = null) {
+  let result = [...arr];
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      result = result.filter(item => {
+        const v = item[key];
+        if (v === null || v === undefined) return false;
+        return String(v).toLowerCase().includes(String(value).toLowerCase());
+      });
+    }
+  }
+  if (orderBy) {
+    result.sort((a, b) => {
+      const av = a[orderBy] || '';
+      const bv = b[orderBy] || '';
+      return String(av).localeCompare(String(bv));
+    });
+  }
+  return result;
+}
+
 export const db = {
-  // ─── SYSTEME ──────────────────────────────────────────
+  // ——— SYSTEME ———
   systems: {
-    async list(search) {
-      let q = supabase.from('systems').select('*, categories(name)').order('system_number');
-      if (search) q = q.ilike('name', `%${search}%`);
-      const { data, error } = await q;
-      if (error) throw error;
-      return data;
+    async list() {
+      return systems.map(s => ({
+        ...s,
+        articles: systemBom
+          .filter(b => b.system_number === s.system_number)
+          .map(b => {
+            const art = articles.find(a =>
+              a.article_number === b.article_number &&
+              (!b.variant || a.variant === b.variant)
+            );
+            return { ...b, article: art || null };
+          })
+      }));
     },
     async get(id) {
-      const { data, error } = await supabase.from('systems').select('*, categories(name)').eq('id', id).single();
-      if (error) throw error;
-      const { data: bom } = await supabase
-        .from('bom_system_articles')
-        .select('*, articles(id, article_number, name, variant)')
-        .eq('system_id', id).order('sort_order');
-      return { ...data, bom: bom || [] };
-    },
-    async create(body) { const { data, error } = await supabase.from('systems').insert(body).select().single(); if (error) throw error; return data; },
-    async update(id, body) { const { data, error } = await supabase.from('systems').update(body).eq('id', id).select().single(); if (error) throw error; return data; },
-    async remove(id) { const { error } = await supabase.from('systems').delete().eq('id', id); if (error) throw error; },
+      const s = systems.find(x => x.id === id || x.system_number === id);
+      if (!s) return null;
+      const bom = systemBom
+        .filter(b => b.system_number === s.system_number)
+        .map(b => {
+          const art = articles.find(a =>
+            a.article_number === b.article_number &&
+            (!b.variant || a.variant === b.variant)
+          );
+          return { ...b, article: art || null };
+        });
+      return { ...s, bom };
+    }
   },
 
-  // ─── ARTIKEL ──────────────────────────────────────────
+  // ——— ARTIKEL ———
   articles: {
-    async list(search, variant) {
-      let q = supabase.from('articles').select('*, categories(name)').order('article_number');
-      if (variant) q = q.eq('variant', variant);
-      if (search) q = q.or(`name.ilike.%${search}%,article_number.ilike.%${search}%`);
-      const { data, error } = await q;
-      if (error) throw error;
-      return data;
+    async list(filters = {}) {
+      return filterAndSort(articles, filters, 'article_number');
     },
     async get(id) {
-      const { data, error } = await supabase.from('articles').select('*, categories(name)').eq('id', id).single();
-      if (error) throw error;
-      const { data: bom } = await supabase
-        .from('bom_article_components')
-        .select('*, components(id, component_number, name, additional_name, length_mm, width_mm, height_mm)')
-        .eq('article_id', id).order('sort_order');
-      return { ...data, bom: bom || [] };
+      const art = articles.find(x => x.id === id || x.article_number === id);
+      if (!art) return null;
+      const bom = articleBom
+        .filter(b =>
+          b.article_number === art.article_number &&
+          (!art.variant || b.variant === art.variant)
+        )
+        .map(b => {
+          const comp = components.find(c => c.component_number === b.component_number);
+          return { ...b, component: comp || null };
+        });
+      // Systeme die diesen Artikel enthalten
+      const inSystems = systemBom
+        .filter(b => b.article_number === art.article_number && (!art.variant || b.variant === art.variant))
+        .map(b => systems.find(s => s.system_number === b.system_number))
+        .filter(Boolean);
+      return { ...art, bom, systems: inSystems };
     },
-    async create(body) { const { data, error } = await supabase.from('articles').insert(body).select().single(); if (error) throw error; return data; },
-    async update(id, body) { const { data, error } = await supabase.from('articles').update(body).eq('id', id).select().single(); if (error) throw error; return data; },
-    async remove(id) { const { error } = await supabase.from('articles').delete().eq('id', id); if (error) throw error; },
+    async getByNumber(articleNumber, variant) {
+      const art = articles.find(a =>
+        a.article_number === articleNumber &&
+        (!variant || a.variant === variant)
+      );
+      if (!art) return null;
+      return this.get(art.id);
+    }
   },
 
-  // ─── KOMPONENTEN ──────────────────────────────────────
+  // ——— KOMPONENTEN ———
   components: {
-    async list(search) {
-      let q = supabase.from('components').select('*, suppliers(name)').order('component_number');
-      if (search) q = q.or(`name.ilike.%${search}%,component_number.ilike.%${search}%`);
-      const { data, error } = await q;
-      if (error) throw error;
-      return data;
-    },
-  },
-
-  // ─── KUNDEN ───────────────────────────────────────────
-  customers: {
-    async list(search) {
-      let q = supabase.from('customers').select('*').order('customer_number');
-      if (search) q = q.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,company_name.ilike.%${search}%,customer_number.ilike.%${search}%`);
-      const { data, error } = await q;
-      if (error) throw error;
-      return data;
-    },
-    async create(body) { const { data, error } = await supabase.from('customers').insert(body).select().single(); if (error) throw error; return data; },
-    async update(id, body) { const { data, error } = await supabase.from('customers').update(body).eq('id', id).select().single(); if (error) throw error; return data; },
-  },
-
-  // ─── AUFTRÄGE ─────────────────────────────────────────
-  orders: {
-    async list() {
-      const { data, error } = await supabase.from('orders').select('*, customers(first_name, last_name, company_name)').order('created_at', { ascending: false });
-      if (error) throw error;
-      return data;
+    async list(filters = {}) {
+      return filterAndSort(components, filters, 'component_number');
     },
     async get(id) {
-      const { data, error } = await supabase.from('orders').select('*, customers(first_name, last_name, company_name, email)').eq('id', id).single();
-      if (error) throw error;
-      const { data: items } = await supabase.from('order_items')
-        .select('*, systems(name, system_number), articles(name, article_number, variant), components(name, component_number)')
-        .eq('order_id', id);
-      return { ...data, items: items || [] };
-    },
+      const comp = components.find(x => x.id === id || x.component_number === id);
+      if (!comp) return null;
+      // Artikel die diese Komponente verwenden
+      const usedIn = articleBom
+        .filter(b => b.component_number === comp.component_number)
+        .map(b => {
+          const art = articles.find(a =>
+            a.article_number === b.article_number &&
+            (!b.variant || a.variant === b.variant)
+          );
+          return { ...b, article: art || null };
+        });
+      return { ...comp, usedIn };
+    }
   },
 
-  // ─── INVENTAR ─────────────────────────────────────────
-  inventory: {
-    async list() {
-      const { data, error } = await supabase.from('inventory')
-        .select('*, warehouses(name), articles(article_number, name, variant), components(component_number, name)');
-      if (error) throw error;
-      return data;
-    },
+  // ——— STÜCKLISTE SYSTEME ———
+  systemBom: {
+    async list(systemNumber) {
+      const bom = systemBom.filter(b =>
+        !systemNumber || b.system_number === systemNumber
+      );
+      return bom.map(b => {
+        const art = articles.find(a =>
+          a.article_number === b.article_number &&
+          (!b.variant || a.variant === b.variant)
+        );
+        const sys = systems.find(s => s.system_number === b.system_number);
+        return { ...b, article: art || null, system: sys || null };
+      });
+    }
   },
 
-  // ─── RECHNUNGEN ───────────────────────────────────────
-  invoices: {
-    async list(status) {
-      let q = supabase.from('invoices').select('*, customers(first_name, last_name, company_name)').order('invoice_date', { ascending: false });
-      if (status) q = q.eq('status', status);
-      const { data, error } = await q;
-      if (error) throw error;
-      return data;
-    },
+  // ——— STÜCKLISTE ARTIKEL ———
+  articleBom: {
+    async list(articleNumber, variant) {
+      const bom = articleBom.filter(b =>
+        (!articleNumber || b.article_number === articleNumber) &&
+        (!variant || b.variant === variant)
+      );
+      return bom.map(b => {
+        const comp = components.find(c => c.component_number === b.component_number);
+        return { ...b, component: comp || null };
+      });
+    }
   },
 
-  // ─── DASHBOARD ────────────────────────────────────────
+  // ——— DASHBOARD STATS ———
   dashboard: {
     async get() {
-      const [systems, articles, components, customers, orders, invoices, rentals] = await Promise.all([
-        supabase.from('systems').select('id', { count: 'exact', head: true }),
-        supabase.from('articles').select('id', { count: 'exact', head: true }),
-        supabase.from('components').select('id', { count: 'exact', head: true }),
-        supabase.from('customers').select('id', { count: 'exact', head: true }),
-        supabase.from('orders').select('id', { count: 'exact', head: true }).neq('status', 'cancelled'),
-        supabase.from('invoices').select('id, total, status'),
-        supabase.from('rental_contracts').select('id, monthly_total').eq('status', 'active'),
-      ]);
-      const openInv = (invoices.data || []).filter(i => ['sent', 'overdue'].includes(i.status));
-      return {
-        counts: {
-          systems: systems.count || 0, articles: articles.count || 0, components: components.count || 0,
-          customers: customers.count || 0, orders: orders.count || 0, active_rentals: (rentals.data || []).length,
-        },
-        finance: {
-          open_invoices_count: openInv.length,
-          open_invoices_amount: openInv.reduce((s, i) => s + Number(i.total || 0), 0),
-          monthly_rental_income: (rentals.data || []).reduce((s, r) => s + Number(r.monthly_total || 0), 0),
-        }
-      };
+      return this.getStats();
     },
-  },
+    async getStats() {
+      const uniqueArticles = [...new Set(articles.map(a => a.article_number))];
+      const uniqueComponents = [...new Set(components.map(c => c.component_number))];
+      const suppliers = [...new Set(components.map(c => c.supplier).filter(Boolean))];
+      const materials = [...new Set(components.map(c => c.base_material_code).filter(Boolean))];
+
+      return {
+        systemCount: systems.length,
+        articleCount: uniqueArticles.length,
+        variantCount: articles.length,
+        componentCount: uniqueComponents.length,
+        supplierCount: suppliers.length,
+        materialCount: materials.length,
+        bomSystemEntries: systemBom.length,
+        bomArticleEntries: articleBom.length,
+        suppliers,
+        materials
+      };
+    }
+  }
 };
